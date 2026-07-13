@@ -68,13 +68,20 @@ def recording_id(o, fallback_path):
 
 
 def order_ok(o, tol=1e-9):
-    """all_logits/all_probabilities in MS_CLASS_ORDER? Check via (class_names, scores)."""
+    """all_logits/all_probabilities in MS_CLASS_ORDER? Check via (class_names, scores).
+    Returns False (never raises) for the old thin format that lacks these keys or
+    has the wrong class list, so such files are skipped and reported, not fatal."""
+    if not {"class_names", "scores", "all_probabilities"} <= o.keys():
+        return False
+    ap = o["all_probabilities"]
+    if len(ap) != len(MS_CLASS_ORDER):
+        return False
     truth = dict(zip(o["class_names"], o["scores"]))
     try:
         want = [truth[c] for c in MS_CLASS_ORDER]
     except KeyError:
         return False
-    return all(abs(a - b) <= tol for a, b in zip(want, o["all_probabilities"]))
+    return all(abs(a - b) <= tol for a, b in zip(want, ap))
 
 
 def out_path(out_dir, rid, key, nested):
@@ -108,7 +115,7 @@ def consolidate(json_root, out_dir, hop=5.0, nested=True, force=False):
         groups.setdefault(recording_id_from_path(fp), []).append(fp)
     print(f"{len(groups):,} recordings; writing CSVs ...", file=sys.stderr, flush=True)
 
-    manifest, bad = [], []
+    manifest, bad, skipped_recs = [], [], []
     for i, (rid, paths) in enumerate(sorted(groups.items()), 1):
         try:
             key = ts_key(rid)
@@ -119,14 +126,15 @@ def consolidate(json_root, out_dir, hop=5.0, nested=True, force=False):
             continue
         t0 = ts_epoch(key)
         paths = sorted(paths, key=lambda p: int(_CHUNK.search(p).group(1)))
-        rows = []
+        rows, n_bad = [], 0
         for fp in paths:
             o = json.load(open(fp))
             if not order_ok(o):
-                bad.append(fp); continue
+                bad.append(fp); n_bad += 1; continue
             idx = int(_CHUNK.search(fp).group(1))            # chunk_001 -> offset 0
             rows.append([int(t0 + (idx - 1) * hop)] + list(o["all_logits"]))
         if not rows:
+            skipped_recs.append((rid, len(paths)))           # whole recording old-format
             continue
         with open(dest, "w", newline="") as fh:
             w = csv.writer(fh)
@@ -141,7 +149,18 @@ def consolidate(json_root, out_dir, hop=5.0, nested=True, force=False):
         w.writerow(["recording_id", "start_epoch", "n_chunks", "path"])
         w.writerows(sorted(manifest, key=lambda r: r[1]))
 
+    if skipped_recs:
+        with open(os.path.join(out_dir, "skipped.csv"), "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["recording_id", "n_chunks"])
+            w.writerows(sorted(skipped_recs))
+
     print(f"\nwrote {len(manifest):,} recording CSVs + manifest.csv under {out_dir}")
+    if skipped_recs:
+        print(f"SKIPPED {len(skipped_recs)} recording(s) in the old format (no "
+              f"all_logits/12 classes) -> listed in skipped.csv:", file=sys.stderr)
+        for rid, n in skipped_recs[:5]:
+            print(f"    {rid}  ({n} chunks)", file=sys.stderr)
     if bad:
         print(f"WARNING: {len(bad)} chunk(s) FAILED the class-order self-check and "
               f"were skipped; the class list may differ. First few:", file=sys.stderr)
