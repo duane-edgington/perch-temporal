@@ -131,6 +131,14 @@ coherent bouts, erase speckle). Monthly plots are the "before" picture.
 
 - [ ] Finish + verify the April 2018 consolidation run (count ~4,320, zero WARNINGs).
       Confirm `scores_gpu` covers 2018/2020/2026 (not mixed with old `/scores`).
+- [ ] **Old-format stragglers:** April 2018 had 17/4,320 recordings in the old thin
+      10-class format (no all_logits), logged to `logits/2018/04/skipped.csv` and
+      skipped. Plan (another day): write a diagnostic scanning ALL months (2018/
+      2020/2026) for old-format recordings + their file mtimes to see if clustered
+      (one bad batch) or scattered (intermittent bug); then regenerate just those
+      through the current 12-class model (in perch-pytorch; audio still under
+      resampled_24kHz_chunks) and rerun consolidation (resumable) to fill gaps.
+      Not blocking: 0.4%, spread out, `stitch` treats them as short gaps.
 - [ ] Perch export contract from perch-pytorch/GB10: `.npz` per recording, 5 s hop,
       `embeddings` + 4 posteriors (`perch_orca/pwsd/humpback/ship`) + `hop_sec`.
       (Add a `ship` channel to the notebook `Config`.)
