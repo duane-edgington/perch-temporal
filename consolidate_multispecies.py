@@ -86,19 +86,27 @@ def out_path(out_dir, rid, key, nested):
     return os.path.join(sub, f"{rid}{SUFFIX}")
 
 
+def recording_id_from_path(fp):
+    """Recording id from the path: parent dir of the chunk JSON
+    (.../MARS_20180413_071913_resampled_24kHz/..._chunk_039_output.json), else the
+    chunk filename with the _chunk_NNN... suffix stripped. No file read needed."""
+    parent = os.path.basename(os.path.dirname(fp))
+    if _TS.search(parent):
+        return parent
+    return _CHUNK.split(os.path.basename(fp))[0].rstrip("_")
+
+
 def consolidate(json_root, out_dir, hop=5.0, nested=True, force=False):
     os.makedirs(out_dir, exist_ok=True)
+    print(f"scanning {json_root} for chunk JSONs ...", file=sys.stderr, flush=True)
     files = glob.glob(f"{json_root}/**/*chunk_*.json", recursive=True)
-    print(f"scanning {len(files):,} chunk JSONs under {json_root}", file=sys.stderr)
+    print(f"found {len(files):,} chunk JSONs", file=sys.stderr, flush=True)
 
+    # Group by recording via PATH only -- no file reads (the slow part before).
     groups = {}
     for fp in files:
-        try:
-            rid = recording_id(json.load(open(fp)), fp)
-        except Exception as e:
-            print(f"  skip (unreadable) {fp}: {e}", file=sys.stderr); continue
-        groups.setdefault(rid, []).append(fp)
-    print(f"{len(groups):,} recordings", file=sys.stderr)
+        groups.setdefault(recording_id_from_path(fp), []).append(fp)
+    print(f"{len(groups):,} recordings; writing CSVs ...", file=sys.stderr, flush=True)
 
     manifest, bad = [], []
     for i, (rid, paths) in enumerate(sorted(groups.items()), 1):
@@ -126,7 +134,7 @@ def consolidate(json_root, out_dir, hop=5.0, nested=True, force=False):
             w.writerows(rows)
         manifest.append((rid, rows[0][0], len(rows), os.path.relpath(dest, out_dir)))
         if i % 200 == 0:
-            print(f"  {i:,}/{len(groups):,} recordings done", file=sys.stderr)
+            print(f"  {i:,}/{len(groups):,} recordings written", file=sys.stderr, flush=True)
 
     with open(os.path.join(out_dir, "manifest.csv"), "w", newline="") as fh:
         w = csv.writer(fh)
