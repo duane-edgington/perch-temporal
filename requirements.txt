@@ -1,0 +1,17 @@
+# Temporal-layer repo — dependencies for consolidation + calibration + HMM.
+# CPU-only; runs anywhere (Spark box included). No CUDA / torchaudio / TensorFlow.
+#
+# consolidate_multispecies.py needs only pandas (rest is standard library).
+# The full HMM pipeline adds numpy / scipy / scikit-learn.
+#
+# NOT here (by design):
+#   - torch: added later for the BiLSTM/TCN head, from your working GB10 / CUDA-13
+#            source (reuse perch-pytorch's), NOT the cu128 index.
+#   - the embedding model + torchaudio: live in the perch-pytorch repo on the GB10;
+#     this repo only reads its .npz outputs.
+#   - tensorflow: deliberately absent (the whole point of the TF-free loop).
+
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+scikit-learn>=1.3
