@@ -218,6 +218,73 @@ SEPARATE repo (NOT perch-temporal):
 - To fix the 17: rerun this on just their 24 kHz chunk dirs (from `skipped.csv`),
   then rerun `consolidate_multispecies.py` (resumable) to fill the gaps.
 
+## Local Jupyter migration + first pipeline runs (DONE this session)
+
+- Runs entirely on spark-ae0e now -- NO Colab/Drive. `perch2_temporal.ipynb`
+  (dropped the `_colab` suffix; old colab notebook kept, not deleted). Committed to
+  perch-temporal. Launch: `jupyter lab --no-browser --ip=127.0.0.1 --port=8888` on
+  the box, then `ssh -N -L 8888:127.0.0.1:8888 duane@134.89.11.107` from the Mac.
+- Notebook edits made: PATHS point at the /mnt logits/ and perch/ roots (loaders
+  glob recursively); `load_perch` reads the 5 real channels
+  (perch_dolphin_call/humpback_song/orca_call/other/ship_noise), embeddings
+  OPTIONAL (slim files have none), uses the file's own epoch_seconds;
+  `emission_sources` remapped (humpback<-perch_humpback_song+ms_Mn,
+  orca<-perch_orca_call+ms_Oo, pwsd<-perch_dolphin_call).
+- Pipeline RUNS end-to-end on April 2018: 4,303 stacks built (4,320 perch - 17
+  ms-only stragglers, as expected). Load ~15 s when the kernel is healthy.
+
+### Labels / calibration
+- Analyst labels live in `/mnt/PAM_Analysis/perch-hoplite/provenance/labels/`
+  (JSON: filename, offset_s, label, label_type). Two sessions so far:
+  * July 9 (April 2018 DB): orca-query era -> orca_call / dolphin_call / other.
+  * July 11 (April 2026 DB): per-class era -> humpback_song labels.
+  Label evolution: early = orca/not-orca (so `other` = "not orca, class not
+  recorded" -- NOT a humpback/pwsd negative); later = precise per class.
+- `build_labels_csv.py` (in perch-temporal) converts analyst JSON -> the notebook's
+  labels.csv (ts_key, frame_index, species, label). Maps orca_call->orca(+),
+  dolphin_call->pwsd(+), humpback_song->humpback(+); `other`->negative for the
+  session's query species only. frame_index = round(offset_s/5).
+- April 2018 labels.csv written to `/mnt/PAM_Analysis/perch-hoplite/labels/`:
+  **8 orca pos + 6 orca neg (calibrates), 9 pwsd pos + 0 neg (can't -> squash).**
+- Calibrator hardened: skip any channel with <2 classes (falls back to sigmoid
+  squash) instead of crashing. So orca calibrates (Platt, monotonic: logit 3.3->
+  0.96), pwsd squashes.
+- Month split of verified labels: **April 2018 = orca ground truth; April 2026 =
+  humpback ground truth.** April 2026 has NO data yet (multispecies not run on
+  2026 -> would need the full GPU run + consolidate + perch export first). So
+  chose to validate ORCA on April 2018 now.
+
+### HMM tuning findings (orca, verified rec 20180418T115912, frame 9)
+- First run erased ALL verified orca (flipped_to_absent, smoothed_pos=0). Diagnosis
+  found THREE compounding issues, needing two fixes (calibration was fine: Platt
+  maps logit 3.3->0.96):
+  1. **Duration prior was placeholder-wrong.** expected_present_sec orca was 180 s
+     (36 frames!) but real present-runs are 1-4 frames (brief calls, not song).
+     -> set orca expected_present_sec = 15 s.
+  2. **Absent state too sticky to ENTER.** expected_absent_sec 1800 s -> a00=0.997,
+     so the HMM never entered present even on confident frames. -> orca
+     expected_absent_sec = 120 s. (This was the real blocker; present-prior alone
+     didn't fix it.)
+  3. **Channel combine diluted.** perch_orca_call and ms_Oo fire one frame APART
+     (frame 8 vs 9); averaging -> ~0.5 non-committal. -> `combine_emission` default
+     changed mean -> **max** (present if EITHER detector confident).
+  Simulation on the verified window: only max-combine + absent=120 TOGETHER makes
+  frame 9 survive. Both committed in the notebook.
+- OPEN: absent=120 may be slightly loose (window sim flipped 6-14 all present);
+  check on the full 120-frame decode (scratch cell added). Validate against the
+  other 7 orca-positive recordings before calling the priors settled (don't overfit
+  to one recording). humpback/pwsd priors still placeholders.
+
+### Workflow lessons
+- Pasting snippets into notebook cells corrupts the pipeline (clobbered a cell
+  once). RULE: diagnostics go in a NEW scratch cell at the very bottom, never edited
+  into pipeline cells; regenerate pipeline cells only by re-downloading the whole nb.
+- A wedged kernel (interrupt did nothing) caused a 15-min "load hang"; standalone
+  the reads are fast (200 npz in 0.6 s). Fix = restart kernel, single-step.
+- To iterate on priors WITHOUT the ~15 s reload: after cell 6 builds `stacks`, edit
+  only Config + calibration + the scratch check; reuse in-memory `stacks`. (Could
+  add a stacks pickle-cache to the nb if reloads become painful.)
+
 ## References
 
 - orcAI — Bonhoeffer et al. 2026, Marine Mammal Science e70083 (doi:10.1111/mms.70083);
