@@ -129,8 +129,11 @@ coherent bouts, erase speckle). Monthly plots are the "before" picture.
 
 ## TODO / next steps
 
-- [ ] Finish + verify the April 2018 consolidation run (count ~4,320, zero WARNINGs).
-      Confirm `scores_gpu` covers 2018/2020/2026 (not mixed with old `/scores`).
+- [x] April 2018 consolidation DONE: 4,303 `_logits.csv` on disk (log said "wrote
+      4,208" because the first crashed run had already written ~95; resumable run
+      skipped those -> 4,208 new + 95 existing = 4,303 on disk = authoritative).
+      17 old-format recordings skipped -> `logits/skipped.csv`.
+- [ ] Confirm `scores_gpu` covers 2020/2026 too (not mixed with old `/scores`).
 - [ ] **Old-format stragglers:** April 2018 had 17/4,320 recordings in the old thin
       10-class format (no all_logits), logged to `logits/2018/04/skipped.csv` and
       skipped. Plan (another day): write a diagnostic scanning ALL months (2018/
@@ -139,14 +142,81 @@ coherent bouts, erase speckle). Monthly plots are the "before" picture.
       through the current 12-class model (in perch-pytorch; audio still under
       resampled_24kHz_chunks) and rerun consolidation (resumable) to fill gaps.
       Not blocking: 0.4%, spread out, `stitch` treats them as short gaps.
-- [ ] Perch export contract from perch-pytorch/GB10: `.npz` per recording, 5 s hop,
-      `embeddings` + 4 posteriors (`perch_orca/pwsd/humpback/ship`) + `hop_sec`.
-      (Add a `ship` channel to the notebook `Config`.)
+- [x] Perch export DESIGNED + written: `export_slim_npz.py` (belongs in perch-hoplite
+      `tools/`). Reads embeddings back out of the Hoplite DB (no GPU), applies the
+      linear classifier, writes slim `.npz` per recording. CPU, minutes.
+  - Embeddings ALREADY in Hoplite DB (`.../db/MARS_20180401_20180430_32kHz_norm/`);
+    do NOT re-embed on the GB10. 32 kHz WAVs live in `.../resampled_32kHz/YYYY/MM/`.
+  - DB: SQLite `windows(id, recording_id, offsets=struct.pack('<dd',start,end))` +
+    `recordings(id, filename)`; USearch key == windows.id;
+    `SQLiteUSearchDB.load(db_path)` then `db.get_embedding(wid)` -> [1,1536].
+  - Classifier `orca_v4.pt` (perch-hoplite): `beta [1536,5]`, `beta_bias [5]`,
+    classes **5**: `dolphin_call, humpback_song, orca_call, other, ship_noise`
+    (`other` = catch-all, kept as an HMM background/noise channel). Trained on
+    `_norm` (peak-0.25) embeddings -> matches the DB. logits = emb@beta + bias.
+  - TWO alignment bugs fixed vs the naive recipe: sort frames by UNPACKED start_s
+    (blob byte-order != numeric for little-endian doubles); epoch is **UTC** to
+    match the multispecies CSVs (naive `.timestamp()` would use local time).
+    Verified: MARS_20180401_000914 -> epoch 1522541354.
+  - Slim export omits embeddings (HMM doesn't need them); `--with-embeddings` adds
+    the [T,1536] block for the future sequence head (heavy: ~3 GB/month, stays on
+    thalassa, not to Drive).
+  - [x] RAN for April 2018 -> **4,320 `.npz`** in `.../perch/2018/04/` (the DB has
+        clean embeddings for ALL 4,320, incl. the 17 that were old-format on the
+        multispecies side -> those 17 have Perch tracks but no ms logits; stitch
+        handles the one-sided frames). Verified: T=120, hop=5.0, first epoch
+        1522541354 == the April 1 logits CSV (UTC alignment holds end-to-end).
+  - Two format surprises fixed on first contact (both now in the committed script):
+    (1) `orca_v4.pt` is NOT a torch pickle -- it's JSON with base64 float32 arrays
+        (LinearClassifier format): beta (embedding_dim,num_classes)=[1536,5],
+        beta_bias [5]. Decode with numpy: np.frombuffer(b64decode(...),f32).
+    (2) perch_hoplite.agile.classifier imports TensorFlow at module load -> can't
+        use LinearClassifier.load in this TF-free venv; decode JSON+base64 directly.
+        Only perch_hoplite import kept is db.sqlite_usearch_impl.
+  - DB open is `SQLiteUSearchDB.create(db_path, readonly=True)` (not .load);
+    `db.get_embeddings_batch(window_ids)` -> [T,1536] (one call/recording, fast).
+  - Committed to perch-hoplite `tools/export_slim_npz.py` (commit 210213c).
+- [ ] **Notebook integration (deferred):** reconcile Perch class names before the
+      first HMM run. Export writes `perch_dolphin_call/humpback_song/orca_call/
+      other/ship_noise`, but notebook `load_perch`/`emission_sources` still expect
+      `perch_humpback/orca/pwsd` AND require an `embeddings` key the slim file lacks.
+      Edits: (a) `load_perch` reads the 5 real channels, makes `embeddings`
+      optional, uses the file's own `epoch_seconds`; (b) `emission_sources`: humpback
+      <- perch_humpback_song + ms_Mn, orca <- perch_orca_call + ms_Oo, pwsd <-
+      perch_dolphin_call, carry perch_other + perch_ship_noise as features;
+      (c) reconcile `pwsd` vs `dolphin_call` naming in Config.
+- [x] Colab data-transfer tooling built: `package_for_colab.sh` (tar.gz per input
+      type from the mount + sha256 MANIFEST) and `colab_stage_inputs.py` (copy from
+      Drive -> /content, checksum, untar, point PATHS local). Not yet folded into
+      the notebook as a cell (deferred with the other notebook edits).
 - [ ] Calibration `labels.csv` — start with orca-validated April 2018; on logits.
 - [ ] First end-to-end HMM run on April 2018; watch `flipped_to_absent`.
 - [ ] Regenerate April 2018 day-x-hour heatmap from smoothed output ("after" vs "before").
 - [ ] Later: BiLSTM/TCN over `FrameStack.embeddings`; borrow orcAI masked BCE.
 - [ ] Record the poster abstract in the **perch-pytorch** repo (not here).
+
+## Regenerating multispecies scores (for the 17 old-format stragglers, someday)
+
+The 12-class `scores_gpu` JSONs are produced by the multispecies model, run from a
+SEPARATE repo (NOT perch-temporal):
+
+- Repo: `github.com/duane-edgington/google-multispecies-whale-detection` (private),
+  cloned on spark-ae0e at `~/gmwd/new3-12_whale_detection/gmwd/`.
+- Runner: `run_model_gpu_optimized.py` (+ `.md` docs, `.sh` wrapper). GPU/TensorFlow.
+  (Getting the TF dependency stack working in that env was hard-won — don't disturb it.)
+- Model: Kaggle `google/multispecies-whale/TensorFlow2/default/2`.
+- Input = the 24 kHz chunk WAVs (`resampled_24kHz_chunks/YYYY/MM/`); output = the
+  per-chunk JSONs into `scores_gpu/YYYY/MM/`.
+- Working example command (ran on spark-ae0e):
+  ```
+  nohup python3 run_model_gpu_optimized.py \
+    --input_dir  /mnt/PAM_Analysis/GoogleMultiSpeciesWhaleModel2/resampled_24kHz_chunks/2021/11/ \
+    --output_dir /mnt/PAM_Analysis/GoogleMultiSpeciesWhaleModel2/scores_gpu/2021/11/ \
+    --model_url "https://www.kaggle.com/models/google/multispecies-whale/TensorFlow2/default/2" \
+    --batch_size 8 > logs/nohup_run_model_gpu_optimized_256_2021_11.out &
+  ```
+- To fix the 17: rerun this on just their 24 kHz chunk dirs (from `skipped.csv`),
+  then rerun `consolidate_multispecies.py` (resumable) to fill the gaps.
 
 ## References
 
